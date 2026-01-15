@@ -1,6 +1,6 @@
 [package]
 name = "minurl"
-version = "0.1.0"
+version = "0.2.0+git"
 edition = "2024"
 authors = ["Elias Rohrer <dev@tnull.de>"]
 license = "MIT OR Apache-2.0"
