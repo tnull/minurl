@@ -30,6 +30,20 @@ pub enum ParseError {
 	InvalidPort,
 }
 
+impl std::fmt::Display for ParseError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			ParseError::EmptyInput => write!(f, "empty input"),
+			ParseError::InvalidCharacter(c) => write!(f, "invalid character: {:?}", c),
+			ParseError::MissingScheme => write!(f, "missing scheme"),
+			ParseError::InvalidScheme => write!(f, "invalid scheme"),
+			ParseError::InvalidPort => write!(f, "invalid port"),
+		}
+	}
+}
+
+impl std::error::Error for ParseError {}
+
 /// A parsed URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Url {
@@ -573,5 +587,20 @@ mod tests {
 		assert_eq!(url.username(), "user");
 		assert_eq!(url.password(), Some(""));
 		assert_eq!(url.base_url(), "example.com");
+	}
+
+	#[test]
+	fn parse_error_display() {
+		assert_eq!(ParseError::EmptyInput.to_string(), "empty input");
+		assert_eq!(ParseError::InvalidCharacter('\x00').to_string(), "invalid character: '\\0'");
+		assert_eq!(ParseError::MissingScheme.to_string(), "missing scheme");
+		assert_eq!(ParseError::InvalidScheme.to_string(), "invalid scheme");
+		assert_eq!(ParseError::InvalidPort.to_string(), "invalid port");
+	}
+
+	#[test]
+	fn parse_error_is_std_error() {
+		fn assert_error<E: std::error::Error>(_: &E) {}
+		assert_error(&ParseError::EmptyInput);
 	}
 }
