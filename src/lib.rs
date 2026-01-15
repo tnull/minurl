@@ -36,6 +36,7 @@ pub struct Url {
 	scheme: String,
 	base_url: String,
 	port: Option<u16>,
+	path: String,
 }
 
 impl Url {
@@ -85,6 +86,16 @@ impl Url {
 			after_scheme.find(|c| c == '/' || c == '?' || c == '#').unwrap_or(after_scheme.len());
 
 		let authority = &after_scheme[..authority_end];
+		let after_authority = &after_scheme[authority_end..];
+
+		// Extract the path - everything from '/' until '?' or '#'
+		let path = if after_authority.starts_with('/') {
+			let path_end =
+				after_authority.find(|c| c == '?' || c == '#').unwrap_or(after_authority.len());
+			&after_authority[..path_end]
+		} else {
+			""
+		};
 
 		// Parse host and optional port from authority
 		let (host, port) = if let Some(colon_pos) = authority.rfind(':') {
@@ -103,7 +114,12 @@ impl Url {
 			(authority, None)
 		};
 
-		Ok(Url { scheme: scheme.to_lowercase(), base_url: host.to_string(), port })
+		Ok(Url {
+			scheme: scheme.to_lowercase(),
+			base_url: host.to_string(),
+			port,
+			path: path.to_string(),
+		})
 	}
 
 	/// Returns the scheme of the URL (e.g., "http", "https").
@@ -119,6 +135,23 @@ impl Url {
 	/// Returns the port number if specified.
 	pub fn port(&self) -> Option<u16> {
 		self.port
+	}
+
+	/// Returns the path of the URL.
+	///
+	/// The path includes the leading `/` if present. Returns an empty string
+	/// if no path was specified.
+	pub fn path(&self) -> &str {
+		&self.path
+	}
+
+	/// Returns an iterator over the path segments.
+	///
+	/// Path segments are the portions between `/` characters. Empty segments
+	/// (from leading or consecutive slashes) are included.
+	pub fn path_segments(&self) -> impl Iterator<Item = &str> {
+		let path = if self.path.starts_with('/') { &self.path[1..] } else { &self.path[..] };
+		path.split('/')
 	}
 }
 
@@ -176,5 +209,43 @@ mod tests {
 	fn scheme_is_lowercased() {
 		let url = Url::parse("HTTP://EXAMPLE.COM").unwrap();
 		assert_eq!(url.scheme(), "http");
+	}
+
+	#[test]
+	fn path_returns_full_path() {
+		let url = Url::parse("http://example.com/path/to/resource").unwrap();
+		assert_eq!(url.path(), "/path/to/resource");
+	}
+
+	#[test]
+	fn path_is_empty_when_not_specified() {
+		let url = Url::parse("http://example.com").unwrap();
+		assert_eq!(url.path(), "");
+	}
+
+	#[test]
+	fn path_segments_splits_correctly() {
+		let url = Url::parse("http://example.com/path/to/resource").unwrap();
+		let segments: Vec<&str> = url.path_segments().collect();
+		assert_eq!(segments, vec!["path", "to", "resource"]);
+	}
+
+	#[test]
+	fn path_segments_handles_empty_path() {
+		let url = Url::parse("http://example.com").unwrap();
+		let segments: Vec<&str> = url.path_segments().collect();
+		assert_eq!(segments, vec![""]);
+	}
+
+	#[test]
+	fn path_stops_at_query_string() {
+		let url = Url::parse("http://example.com/path?query=value").unwrap();
+		assert_eq!(url.path(), "/path");
+	}
+
+	#[test]
+	fn path_stops_at_fragment() {
+		let url = Url::parse("http://example.com/path#section").unwrap();
+		assert_eq!(url.path(), "/path");
 	}
 }
