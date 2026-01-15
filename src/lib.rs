@@ -112,13 +112,36 @@ impl Url {
 		let fragment = if after_query.starts_with('#') { Some(&after_query[1..]) } else { None };
 
 		// Parse host and optional port from authority
-		let (host, port) = if let Some(colon_pos) = authority.rfind(':') {
+		// Handle IPv6 addresses specially: [ipv6]:port
+		let (host, port) = if authority.starts_with('[') {
+			// IPv6 address - find the closing bracket
+			if let Some(bracket_pos) = authority.find(']') {
+				let after_bracket = &authority[bracket_pos + 1..];
+				if after_bracket.starts_with(':') && after_bracket.len() > 1 {
+					// Has a port after the bracket
+					let potential_port = &after_bracket[1..];
+					if potential_port.chars().all(|c| c.is_ascii_digit()) {
+						let port_num: u16 =
+							potential_port.parse().map_err(|_| ParseError::InvalidPort)?;
+						(&authority[..bracket_pos + 1], Some(port_num))
+					} else {
+						(authority, None)
+					}
+				} else if after_bracket.is_empty() {
+					// Just [ipv6] with no port
+					(authority, None)
+				} else {
+					// Invalid: something after ] that isn't :port
+					(authority, None)
+				}
+			} else {
+				// No closing bracket - malformed, but don't fail, just use as-is
+				(authority, None)
+			}
+		} else if let Some(colon_pos) = authority.rfind(':') {
 			let potential_port = &authority[colon_pos + 1..];
-			// Check if this is actually a port (all digits) or part of IPv6
-			if !potential_port.is_empty()
-				&& potential_port.chars().all(|c| c.is_ascii_digit())
-				&& !authority.starts_with('[')
-			{
+			// Check if this is actually a port (all digits)
+			if !potential_port.is_empty() && potential_port.chars().all(|c| c.is_ascii_digit()) {
 				let port_num: u16 = potential_port.parse().map_err(|_| ParseError::InvalidPort)?;
 				(&authority[..colon_pos], Some(port_num))
 			} else {
@@ -420,5 +443,36 @@ mod tests {
 		let url = Url::parse("http://example.com").unwrap();
 		let formatted = format!("URL: {}", url);
 		assert_eq!(formatted, "URL: http://example.com");
+	}
+
+	#[test]
+	fn ipv6_without_port() {
+		let url = Url::parse("http://[::1]/path").unwrap();
+		assert_eq!(url.scheme(), "http");
+		assert_eq!(url.base_url(), "[::1]");
+		assert_eq!(url.port(), None);
+		assert_eq!(url.path(), "/path");
+	}
+
+	#[test]
+	fn ipv6_with_port() {
+		let url = Url::parse("http://[::1]:8080/path").unwrap();
+		assert_eq!(url.scheme(), "http");
+		assert_eq!(url.base_url(), "[::1]");
+		assert_eq!(url.port(), Some(8080));
+		assert_eq!(url.path(), "/path");
+	}
+
+	#[test]
+	fn ipv6_full_address_with_port() {
+		let url = Url::parse("http://[2001:db8::1]:443/").unwrap();
+		assert_eq!(url.base_url(), "[2001:db8::1]");
+		assert_eq!(url.port(), Some(443));
+	}
+
+	#[test]
+	fn ipv6_as_str_roundtrip() {
+		let url = Url::parse("http://[::1]:8080/path").unwrap();
+		assert_eq!(url.as_str(), "http://[::1]:8080/path");
 	}
 }
