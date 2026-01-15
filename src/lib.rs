@@ -38,6 +38,7 @@ pub struct Url {
 	port: Option<u16>,
 	path: String,
 	query: Option<String>,
+	fragment: Option<String>,
 }
 
 impl Url {
@@ -99,12 +100,15 @@ impl Url {
 		};
 
 		// Extract the query - everything after '?' until '#'
-		let query = if after_path.starts_with('?') {
+		let (query, after_query) = if after_path.starts_with('?') {
 			let query_end = after_path[1..].find('#').map(|i| i + 1).unwrap_or(after_path.len());
-			Some(&after_path[1..query_end])
+			(Some(&after_path[1..query_end]), &after_path[query_end..])
 		} else {
-			None
+			(None, after_path)
 		};
+
+		// Extract the fragment - everything after '#'
+		let fragment = if after_query.starts_with('#') { Some(&after_query[1..]) } else { None };
 
 		// Parse host and optional port from authority
 		let (host, port) = if let Some(colon_pos) = authority.rfind(':') {
@@ -129,6 +133,7 @@ impl Url {
 			port,
 			path: path.to_string(),
 			query: query.map(|q| q.to_string()),
+			fragment: fragment.map(|f| f.to_string()),
 		})
 	}
 
@@ -185,6 +190,13 @@ impl Url {
 				}
 			})
 		})
+	}
+
+	/// Returns the fragment identifier of the URL, if present.
+	///
+	/// The returned string does not include the leading `#`.
+	pub fn fragment(&self) -> Option<&str> {
+		self.fragment.as_deref()
 	}
 }
 
@@ -319,5 +331,32 @@ mod tests {
 		let url = Url::parse("http://example.com").unwrap();
 		let pairs: Vec<(&str, &str)> = url.query_pairs().collect();
 		assert!(pairs.is_empty());
+	}
+
+	#[test]
+	fn fragment_returns_fragment() {
+		let url = Url::parse("http://example.com/path#section").unwrap();
+		assert_eq!(url.fragment(), Some("section"));
+	}
+
+	#[test]
+	fn fragment_is_none_when_not_present() {
+		let url = Url::parse("http://example.com/path").unwrap();
+		assert_eq!(url.fragment(), None);
+	}
+
+	#[test]
+	fn fragment_with_query() {
+		let url = Url::parse("http://example.com/path?query=value#section").unwrap();
+		assert_eq!(url.query(), Some("query=value"));
+		assert_eq!(url.fragment(), Some("section"));
+	}
+
+	#[test]
+	fn fragment_without_path_or_query() {
+		let url = Url::parse("http://example.com#section").unwrap();
+		assert_eq!(url.path(), "");
+		assert_eq!(url.query(), None);
+		assert_eq!(url.fragment(), Some("section"));
 	}
 }
