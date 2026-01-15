@@ -33,6 +33,7 @@ pub enum ParseError {
 /// A parsed URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Url {
+	serialization: String,
 	scheme: String,
 	base_url: String,
 	port: Option<u16>,
@@ -127,14 +128,27 @@ impl Url {
 			(authority, None)
 		};
 
-		Ok(Url {
-			scheme: scheme.to_lowercase(),
-			base_url: host.to_string(),
-			port,
-			path: path.to_string(),
-			query: query.map(|q| q.to_string()),
-			fragment: fragment.map(|f| f.to_string()),
-		})
+		let scheme = scheme.to_lowercase();
+		let path = path.to_string();
+		let query = query.map(|q| q.to_string());
+		let fragment = fragment.map(|f| f.to_string());
+
+		// Build the serialized URL
+		let mut serialization = format!("{}://{}", scheme, host);
+		if let Some(p) = port {
+			serialization.push_str(&format!(":{}", p));
+		}
+		serialization.push_str(&path);
+		if let Some(ref q) = query {
+			serialization.push('?');
+			serialization.push_str(q);
+		}
+		if let Some(ref f) = fragment {
+			serialization.push('#');
+			serialization.push_str(f);
+		}
+
+		Ok(Url { serialization, scheme, base_url: host.to_string(), port, path, query, fragment })
 	}
 
 	/// Returns the scheme of the URL (e.g., "http", "https").
@@ -197,6 +211,17 @@ impl Url {
 	/// The returned string does not include the leading `#`.
 	pub fn fragment(&self) -> Option<&str> {
 		self.fragment.as_deref()
+	}
+
+	/// Returns the serialized URL as a string slice.
+	pub fn as_str(&self) -> &str {
+		&self.serialization
+	}
+}
+
+impl std::fmt::Display for Url {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str(self.as_str())
 	}
 }
 
@@ -358,5 +383,42 @@ mod tests {
 		assert_eq!(url.path(), "");
 		assert_eq!(url.query(), None);
 		assert_eq!(url.fragment(), Some("section"));
+	}
+
+	#[test]
+	fn as_str_returns_full_url() {
+		let url = Url::parse("http://example.com/path?query=value#section").unwrap();
+		assert_eq!(url.as_str(), "http://example.com/path?query=value#section");
+	}
+
+	#[test]
+	fn as_str_with_port() {
+		let url = Url::parse("https://example.com:8080/path").unwrap();
+		assert_eq!(url.as_str(), "https://example.com:8080/path");
+	}
+
+	#[test]
+	fn as_str_normalizes_scheme_to_lowercase() {
+		let url = Url::parse("HTTP://EXAMPLE.COM/path").unwrap();
+		assert_eq!(url.as_str(), "http://EXAMPLE.COM/path");
+	}
+
+	#[test]
+	fn as_str_minimal_url() {
+		let url = Url::parse("http://example.com").unwrap();
+		assert_eq!(url.as_str(), "http://example.com");
+	}
+
+	#[test]
+	fn display_matches_as_str() {
+		let url = Url::parse("http://example.com/path?query=value#section").unwrap();
+		assert_eq!(format!("{}", url), url.as_str());
+	}
+
+	#[test]
+	fn display_can_be_used_in_format_string() {
+		let url = Url::parse("http://example.com").unwrap();
+		let formatted = format!("URL: {}", url);
+		assert_eq!(formatted, "URL: http://example.com");
 	}
 }
