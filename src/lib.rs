@@ -26,6 +26,8 @@ pub enum ParseError {
 	MissingScheme,
 	/// The URL has an invalid scheme format.
 	InvalidScheme,
+	/// The URL has an empty host.
+	EmptyHost,
 	/// The port number is invalid.
 	InvalidPort,
 }
@@ -37,6 +39,7 @@ impl std::fmt::Display for ParseError {
 			ParseError::InvalidCharacter(c) => write!(f, "invalid character: {:?}", c),
 			ParseError::MissingScheme => write!(f, "missing scheme"),
 			ParseError::InvalidScheme => write!(f, "invalid scheme"),
+			ParseError::EmptyHost => write!(f, "empty host"),
 			ParseError::InvalidPort => write!(f, "invalid port"),
 		}
 	}
@@ -184,6 +187,11 @@ impl Url {
 		} else {
 			(host_and_port, None)
 		};
+
+		// Validate that host is not empty
+		if host.is_empty() {
+			return Err(ParseError::EmptyHost);
+		}
 
 		let scheme = scheme.to_lowercase();
 		let path = path.to_string();
@@ -595,7 +603,15 @@ mod tests {
 		assert_eq!(ParseError::InvalidCharacter('\x00').to_string(), "invalid character: '\\0'");
 		assert_eq!(ParseError::MissingScheme.to_string(), "missing scheme");
 		assert_eq!(ParseError::InvalidScheme.to_string(), "invalid scheme");
+		assert_eq!(ParseError::EmptyHost.to_string(), "empty host");
 		assert_eq!(ParseError::InvalidPort.to_string(), "invalid port");
+	}
+
+	#[test]
+	fn empty_host_returns_error() {
+		assert_eq!(Url::parse("http:///path"), Err(ParseError::EmptyHost));
+		assert_eq!(Url::parse("http://:8080/path"), Err(ParseError::EmptyHost));
+		assert_eq!(Url::parse("http://user@/path"), Err(ParseError::EmptyHost));
 	}
 
 	#[test]
