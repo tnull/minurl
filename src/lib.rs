@@ -26,15 +26,34 @@ pub enum ParseError {
 	MissingScheme,
 	/// The URL has an invalid scheme format.
 	InvalidScheme,
+	/// The URL has an empty host.
+	EmptyHost,
 	/// The port number is invalid.
 	InvalidPort,
 }
+
+impl std::fmt::Display for ParseError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			ParseError::EmptyInput => write!(f, "empty input"),
+			ParseError::InvalidCharacter(c) => write!(f, "invalid character: {:?}", c),
+			ParseError::MissingScheme => write!(f, "missing scheme"),
+			ParseError::InvalidScheme => write!(f, "invalid scheme"),
+			ParseError::EmptyHost => write!(f, "empty host"),
+			ParseError::InvalidPort => write!(f, "invalid port"),
+		}
+	}
+}
+
+impl std::error::Error for ParseError {}
 
 /// A parsed URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Url {
 	serialization: String,
 	scheme: String,
+	username: String,
+	password: Option<String>,
 	base_url: String,
 	port: Option<u16>,
 	path: String,
@@ -111,22 +130,68 @@ impl Url {
 		// Extract the fragment - everything after '#'
 		let fragment = if after_query.starts_with('#') { Some(&after_query[1..]) } else { None };
 
-		// Parse host and optional port from authority
-		let (host, port) = if let Some(colon_pos) = authority.rfind(':') {
-			let potential_port = &authority[colon_pos + 1..];
-			// Check if this is actually a port (all digits) or part of IPv6
-			if !potential_port.is_empty()
-				&& potential_port.chars().all(|c| c.is_ascii_digit())
-				&& !authority.starts_with('[')
-			{
-				let port_num: u16 = potential_port.parse().map_err(|_| ParseError::InvalidPort)?;
-				(&authority[..colon_pos], Some(port_num))
+		// Extract userinfo (username:password@) from authority if present
+		let (userinfo, host_and_port) = if let Some(at_pos) = authority.rfind('@') {
+			(Some(&authority[..at_pos]), &authority[at_pos + 1..])
+		} else {
+			(None, authority)
+		};
+
+		// Parse username and password from userinfo
+		let (username, password) = if let Some(info) = userinfo {
+			if let Some(colon_pos) = info.find(':') {
+				(info[..colon_pos].to_string(), Some(info[colon_pos + 1..].to_string()))
 			} else {
-				(authority, None)
+				(info.to_string(), None)
 			}
 		} else {
-			(authority, None)
+			(String::new(), None)
 		};
+
+		// Parse host and optional port from host_and_port
+		// Handle IPv6 addresses specially: [ipv6]:port
+		let (host, port) = if host_and_port.starts_with('[') {
+			// IPv6 address - find the closing bracket
+			if let Some(bracket_pos) = host_and_port.find(']') {
+				let after_bracket = &host_and_port[bracket_pos + 1..];
+				if after_bracket.starts_with(':') && after_bracket.len() > 1 {
+					// Has a port after the bracket
+					let potential_port = &after_bracket[1..];
+					if potential_port.chars().all(|c| c.is_ascii_digit()) {
+						let port_num: u16 =
+							potential_port.parse().map_err(|_| ParseError::InvalidPort)?;
+						(&host_and_port[..bracket_pos + 1], Some(port_num))
+					} else {
+						(host_and_port, None)
+					}
+				} else if after_bracket.is_empty() {
+					// Just [ipv6] with no port
+					(host_and_port, None)
+				} else {
+					// Invalid: something after ] that isn't :port
+					(host_and_port, None)
+				}
+			} else {
+				// No closing bracket - malformed, but don't fail, just use as-is
+				(host_and_port, None)
+			}
+		} else if let Some(colon_pos) = host_and_port.rfind(':') {
+			let potential_port = &host_and_port[colon_pos + 1..];
+			// Check if this is actually a port (all digits)
+			if !potential_port.is_empty() && potential_port.chars().all(|c| c.is_ascii_digit()) {
+				let port_num: u16 = potential_port.parse().map_err(|_| ParseError::InvalidPort)?;
+				(&host_and_port[..colon_pos], Some(port_num))
+			} else {
+				(host_and_port, None)
+			}
+		} else {
+			(host_and_port, None)
+		};
+
+		// Validate that host is not empty
+		if host.is_empty() {
+			return Err(ParseError::EmptyHost);
+		}
 
 		let scheme = scheme.to_lowercase();
 		let path = path.to_string();
@@ -134,7 +199,16 @@ impl Url {
 		let fragment = fragment.map(|f| f.to_string());
 
 		// Build the serialized URL
-		let mut serialization = format!("{}://{}", scheme, host);
+		let mut serialization = format!("{}://", scheme);
+		if !username.is_empty() {
+			serialization.push_str(&username);
+			if let Some(ref pw) = password {
+				serialization.push(':');
+				serialization.push_str(pw);
+			}
+			serialization.push('@');
+		}
+		serialization.push_str(host);
 		if let Some(p) = port {
 			serialization.push_str(&format!(":{}", p));
 		}
@@ -148,12 +222,34 @@ impl Url {
 			serialization.push_str(f);
 		}
 
-		Ok(Url { serialization, scheme, base_url: host.to_string(), port, path, query, fragment })
+		Ok(Url {
+			serialization,
+			scheme,
+			username,
+			password,
+			base_url: host.to_string(),
+			port,
+			path,
+			query,
+			fragment,
+		})
 	}
 
 	/// Returns the scheme of the URL (e.g., "http", "https").
 	pub fn scheme(&self) -> &str {
 		&self.scheme
+	}
+
+	/// Returns the username from the URL, if present.
+	///
+	/// Returns an empty string if no username was specified.
+	pub fn username(&self) -> &str {
+		&self.username
+	}
+
+	/// Returns the password from the URL, if present.
+	pub fn password(&self) -> Option<&str> {
+		self.password.as_deref()
 	}
 
 	/// Returns the base URL (host portion).
@@ -420,5 +516,107 @@ mod tests {
 		let url = Url::parse("http://example.com").unwrap();
 		let formatted = format!("URL: {}", url);
 		assert_eq!(formatted, "URL: http://example.com");
+	}
+
+	#[test]
+	fn ipv6_without_port() {
+		let url = Url::parse("http://[::1]/path").unwrap();
+		assert_eq!(url.scheme(), "http");
+		assert_eq!(url.base_url(), "[::1]");
+		assert_eq!(url.port(), None);
+		assert_eq!(url.path(), "/path");
+	}
+
+	#[test]
+	fn ipv6_with_port() {
+		let url = Url::parse("http://[::1]:8080/path").unwrap();
+		assert_eq!(url.scheme(), "http");
+		assert_eq!(url.base_url(), "[::1]");
+		assert_eq!(url.port(), Some(8080));
+		assert_eq!(url.path(), "/path");
+	}
+
+	#[test]
+	fn ipv6_full_address_with_port() {
+		let url = Url::parse("http://[2001:db8::1]:443/").unwrap();
+		assert_eq!(url.base_url(), "[2001:db8::1]");
+		assert_eq!(url.port(), Some(443));
+	}
+
+	#[test]
+	fn ipv6_as_str_roundtrip() {
+		let url = Url::parse("http://[::1]:8080/path").unwrap();
+		assert_eq!(url.as_str(), "http://[::1]:8080/path");
+	}
+
+	#[test]
+	fn userinfo_with_username_only() {
+		let url = Url::parse("http://user@example.com/path").unwrap();
+		assert_eq!(url.username(), "user");
+		assert_eq!(url.password(), None);
+		assert_eq!(url.base_url(), "example.com");
+		assert_eq!(url.path(), "/path");
+	}
+
+	#[test]
+	fn userinfo_with_username_and_password() {
+		let url = Url::parse("http://user:pass@example.com/path").unwrap();
+		assert_eq!(url.username(), "user");
+		assert_eq!(url.password(), Some("pass"));
+		assert_eq!(url.base_url(), "example.com");
+		assert_eq!(url.path(), "/path");
+	}
+
+	#[test]
+	fn userinfo_with_port() {
+		let url = Url::parse("http://user:pass@example.com:8080/path").unwrap();
+		assert_eq!(url.username(), "user");
+		assert_eq!(url.password(), Some("pass"));
+		assert_eq!(url.base_url(), "example.com");
+		assert_eq!(url.port(), Some(8080));
+	}
+
+	#[test]
+	fn userinfo_empty_when_not_present() {
+		let url = Url::parse("http://example.com/path").unwrap();
+		assert_eq!(url.username(), "");
+		assert_eq!(url.password(), None);
+	}
+
+	#[test]
+	fn userinfo_as_str_roundtrip() {
+		let url = Url::parse("http://user:pass@example.com:8080/path").unwrap();
+		assert_eq!(url.as_str(), "http://user:pass@example.com:8080/path");
+	}
+
+	#[test]
+	fn userinfo_with_empty_password() {
+		let url = Url::parse("http://user:@example.com").unwrap();
+		assert_eq!(url.username(), "user");
+		assert_eq!(url.password(), Some(""));
+		assert_eq!(url.base_url(), "example.com");
+	}
+
+	#[test]
+	fn parse_error_display() {
+		assert_eq!(ParseError::EmptyInput.to_string(), "empty input");
+		assert_eq!(ParseError::InvalidCharacter('\x00').to_string(), "invalid character: '\\0'");
+		assert_eq!(ParseError::MissingScheme.to_string(), "missing scheme");
+		assert_eq!(ParseError::InvalidScheme.to_string(), "invalid scheme");
+		assert_eq!(ParseError::EmptyHost.to_string(), "empty host");
+		assert_eq!(ParseError::InvalidPort.to_string(), "invalid port");
+	}
+
+	#[test]
+	fn empty_host_returns_error() {
+		assert_eq!(Url::parse("http:///path"), Err(ParseError::EmptyHost));
+		assert_eq!(Url::parse("http://:8080/path"), Err(ParseError::EmptyHost));
+		assert_eq!(Url::parse("http://user@/path"), Err(ParseError::EmptyHost));
+	}
+
+	#[test]
+	fn parse_error_is_std_error() {
+		fn assert_error<E: std::error::Error>(_: &E) {}
+		assert_error(&ParseError::EmptyInput);
 	}
 }
