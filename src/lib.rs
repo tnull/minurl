@@ -37,6 +37,7 @@ pub struct Url {
 	base_url: String,
 	port: Option<u16>,
 	path: String,
+	query: Option<String>,
 }
 
 impl Url {
@@ -89,12 +90,20 @@ impl Url {
 		let after_authority = &after_scheme[authority_end..];
 
 		// Extract the path - everything from '/' until '?' or '#'
-		let path = if after_authority.starts_with('/') {
+		let (path, after_path) = if after_authority.starts_with('/') {
 			let path_end =
 				after_authority.find(|c| c == '?' || c == '#').unwrap_or(after_authority.len());
-			&after_authority[..path_end]
+			(&after_authority[..path_end], &after_authority[path_end..])
 		} else {
-			""
+			("", after_authority)
+		};
+
+		// Extract the query - everything after '?' until '#'
+		let query = if after_path.starts_with('?') {
+			let query_end = after_path[1..].find('#').map(|i| i + 1).unwrap_or(after_path.len());
+			Some(&after_path[1..query_end])
+		} else {
+			None
 		};
 
 		// Parse host and optional port from authority
@@ -119,6 +128,7 @@ impl Url {
 			base_url: host.to_string(),
 			port,
 			path: path.to_string(),
+			query: query.map(|q| q.to_string()),
 		})
 	}
 
@@ -152,6 +162,29 @@ impl Url {
 	pub fn path_segments(&self) -> impl Iterator<Item = &str> {
 		let path = if self.path.starts_with('/') { &self.path[1..] } else { &self.path[..] };
 		path.split('/')
+	}
+
+	/// Returns the query string of the URL, if present.
+	///
+	/// The returned string does not include the leading `?`.
+	pub fn query(&self) -> Option<&str> {
+		self.query.as_deref()
+	}
+
+	/// Returns an iterator over the query string's key-value pairs.
+	///
+	/// Pairs are separated by `&` and keys are separated from values by `=`.
+	/// If a pair has no `=`, the value will be an empty string.
+	pub fn query_pairs(&self) -> impl Iterator<Item = (&str, &str)> {
+		self.query.as_deref().into_iter().flat_map(|q| {
+			q.split('&').map(|pair| {
+				if let Some(eq_pos) = pair.find('=') {
+					(&pair[..eq_pos], &pair[eq_pos + 1..])
+				} else {
+					(pair, "")
+				}
+			})
+		})
 	}
 }
 
@@ -247,5 +280,44 @@ mod tests {
 	fn path_stops_at_fragment() {
 		let url = Url::parse("http://example.com/path#section").unwrap();
 		assert_eq!(url.path(), "/path");
+	}
+
+	#[test]
+	fn query_returns_query_string() {
+		let url = Url::parse("http://example.com/path?foo=bar&baz=qux").unwrap();
+		assert_eq!(url.query(), Some("foo=bar&baz=qux"));
+	}
+
+	#[test]
+	fn query_is_none_when_not_present() {
+		let url = Url::parse("http://example.com/path").unwrap();
+		assert_eq!(url.query(), None);
+	}
+
+	#[test]
+	fn query_stops_at_fragment() {
+		let url = Url::parse("http://example.com/path?query=value#section").unwrap();
+		assert_eq!(url.query(), Some("query=value"));
+	}
+
+	#[test]
+	fn query_pairs_parses_key_value_pairs() {
+		let url = Url::parse("http://example.com?foo=bar&baz=qux").unwrap();
+		let pairs: Vec<(&str, &str)> = url.query_pairs().collect();
+		assert_eq!(pairs, vec![("foo", "bar"), ("baz", "qux")]);
+	}
+
+	#[test]
+	fn query_pairs_handles_missing_value() {
+		let url = Url::parse("http://example.com?foo&bar=baz").unwrap();
+		let pairs: Vec<(&str, &str)> = url.query_pairs().collect();
+		assert_eq!(pairs, vec![("foo", ""), ("bar", "baz")]);
+	}
+
+	#[test]
+	fn query_pairs_is_empty_when_no_query() {
+		let url = Url::parse("http://example.com").unwrap();
+		let pairs: Vec<(&str, &str)> = url.query_pairs().collect();
+		assert!(pairs.is_empty());
 	}
 }
