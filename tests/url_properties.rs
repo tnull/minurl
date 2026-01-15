@@ -188,3 +188,171 @@ proptest! {
 		prop_assert_eq!(parsed.scheme(), scheme);
 	}
 }
+
+// Tests for invalid and arbitrary input strings.
+// These ensure the parser never panics and correctly rejects invalid input.
+proptest! {
+	/// Test that parsing arbitrary random strings never panics.
+	/// The result can be Ok or Err, but it must not panic.
+	#[test]
+	fn arbitrary_strings_never_panic(s in ".*") {
+		// This should never panic, regardless of what string is passed
+		let _result = Url::parse(&s);
+		// If we get here without panicking, the test passes
+	}
+
+	/// Test that parsing arbitrary byte sequences (as UTF-8 strings) never panics.
+	#[test]
+	fn arbitrary_bytes_as_string_never_panic(bytes in prop::collection::vec(any::<u8>(), 0..200)) {
+		// Convert bytes to a string, lossy conversion for invalid UTF-8
+		let s = String::from_utf8_lossy(&bytes);
+		let _result = Url::parse(&s);
+		// If we get here without panicking, the test passes
+	}
+
+	/// Test that empty string is rejected.
+	#[test]
+	fn empty_string_fails(s in prop::string::string_regex("").unwrap()) {
+		let result = Url::parse(&s);
+		prop_assert!(result.is_err(), "Empty string should fail to parse");
+	}
+
+	/// Test that strings without "://" separator are rejected.
+	#[test]
+	fn missing_scheme_separator_fails(
+		scheme in "[a-z]{1,10}",
+		rest in "[a-z0-9./-]{0,50}"
+	) {
+		// Create a URL-like string but without "://"
+		let invalid_url = format!("{}{}", scheme, rest);
+		let result = Url::parse(&invalid_url);
+		prop_assert!(
+			result.is_err(),
+			"URL without '://' should fail: {}",
+			invalid_url
+		);
+	}
+
+	/// Test that schemes starting with a digit are rejected.
+	#[test]
+	fn scheme_starting_with_digit_fails(
+		digit in "[0-9]",
+		rest in "[a-z0-9]{0,10}",
+		host in "[a-z]{2,10}"
+	) {
+		let invalid_url = format!("{}{}://{}", digit, rest, host);
+		let result = Url::parse(&invalid_url);
+		prop_assert!(
+			result.is_err(),
+			"Scheme starting with digit should fail: {}",
+			invalid_url
+		);
+	}
+
+	/// Test that schemes with invalid characters are rejected.
+	#[test]
+	fn scheme_with_invalid_chars_fails(
+		prefix in "[a-z]{1,5}",
+		invalid_char in prop::sample::select(vec!['!', '@', '#', '$', '%', '^', '&', '*', '(', ')', ' ', '\t']),
+		suffix in "[a-z]{0,5}",
+		host in "[a-z]{2,10}"
+	) {
+		let invalid_url = format!("{}{}{}://{}", prefix, invalid_char, suffix, host);
+		let result = Url::parse(&invalid_url);
+		prop_assert!(
+			result.is_err(),
+			"Scheme with invalid char '{}' should fail: {}",
+			invalid_char,
+			invalid_url
+		);
+	}
+
+	/// Test that URLs with control characters are rejected.
+	#[test]
+	fn control_characters_fail(
+		prefix in "[a-z]{1,5}://[a-z]{2,10}",
+		ctrl_char in 0u8..32u8,
+		suffix in "[a-z]{0,10}"
+	) {
+		let invalid_url = format!("{}{}{}", prefix, ctrl_char as char, suffix);
+		let result = Url::parse(&invalid_url);
+		prop_assert!(
+			result.is_err(),
+			"URL with control char (0x{:02x}) should fail: {:?}",
+			ctrl_char,
+			invalid_url
+		);
+	}
+
+	/// Test that URLs with non-ASCII characters are rejected.
+	#[test]
+	fn non_ascii_characters_fail(
+		prefix in "[a-z]{1,5}://[a-z]{2,10}",
+		non_ascii in 128u8..=255u8,
+		suffix in "[a-z]{0,10}"
+	) {
+		// Create a string with a non-ASCII byte
+		let mut bytes = prefix.into_bytes();
+		bytes.push(non_ascii);
+		bytes.extend(suffix.bytes());
+		let invalid_url = String::from_utf8_lossy(&bytes).into_owned();
+		let result = Url::parse(&invalid_url);
+		prop_assert!(
+			result.is_err(),
+			"URL with non-ASCII char should fail: {:?}",
+			invalid_url
+		);
+	}
+
+	/// Test that ports exceeding u16::MAX are rejected.
+	#[test]
+	fn port_overflow_fails(
+		scheme in "[a-z]{1,5}",
+		host in "[a-z]{2,10}",
+		port in 65536u32..=999999u32
+	) {
+		let invalid_url = format!("{}://{}:{}", scheme, host, port);
+		let result = Url::parse(&invalid_url);
+		prop_assert!(
+			result.is_err(),
+			"Port {} exceeds u16::MAX and should fail: {}",
+			port,
+			invalid_url
+		);
+	}
+
+	/// Test that empty scheme (just "://") is rejected.
+	#[test]
+	fn empty_scheme_fails(host in "[a-z]{2,10}") {
+		let invalid_url = format!("://{}", host);
+		let result = Url::parse(&invalid_url);
+		prop_assert!(
+			result.is_err(),
+			"Empty scheme should fail: {}",
+			invalid_url
+		);
+	}
+
+	/// Test various malformed URL patterns.
+	#[test]
+	fn malformed_url_patterns_fail(
+		pattern in prop::sample::select(vec![
+			"://example.com".to_string(),        // Empty scheme
+			":example.com".to_string(),          // Missing slashes
+			"http//example.com".to_string(),     // Missing colon
+			"http:/example.com".to_string(),     // Only one slash
+			"http:example.com".to_string(),      // No slashes
+			"123://example.com".to_string(),     // Scheme starts with digit
+			"http ://example.com".to_string(),   // Space in scheme
+			"ht tp://example.com".to_string(),   // Space in scheme
+			"".to_string(),                      // Empty string
+		])
+	) {
+		let result = Url::parse(&pattern);
+		prop_assert!(
+			result.is_err(),
+			"Malformed pattern should fail: {:?}",
+			pattern
+		);
+	}
+}
