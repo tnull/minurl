@@ -10,3 +10,4 @@ description = "A minimal library for parsing and validating URLs."
 
 [dev-dependencies]
 proptest = "1.5"
+url = "2"

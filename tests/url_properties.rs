@@ -1,113 +1,11 @@
 // Property-based tests for URL parsing based on WHATWG URL Standard
 // https://url.spec.whatwg.org/
 
+mod common;
+
+use common::valid_url_strategy;
 use minurl::Url;
 use proptest::prelude::*;
-
-/// Strategy for generating valid URL schemes.
-/// Per WHATWG spec: scheme starts with ASCII alpha, followed by ASCII alphanumeric, '+', '-', or '.'
-/// We generate lowercase schemes to ensure round-trip serialization works.
-fn scheme_strategy() -> impl Strategy<Value = String> {
-	// First char: lowercase letter
-	let first_char = prop::sample::select(('a'..='z').collect::<Vec<_>>());
-	// Rest: lowercase alphanumeric, '+', '-', '.'
-	let rest_chars = prop::collection::vec(
-		prop::sample::select(
-			('a'..='z').chain('0'..='9').chain(['+', '-', '.'].into_iter()).collect::<Vec<_>>(),
-		),
-		0..8,
-	);
-
-	(first_char, rest_chars).prop_map(|(first, rest)| {
-		let mut s = String::with_capacity(1 + rest.len());
-		s.push(first);
-		for c in rest {
-			s.push(c);
-		}
-		s
-	})
-}
-
-/// Strategy for generating valid host/domain names.
-/// Simplified: alphanumeric labels separated by dots, no leading/trailing hyphens in labels.
-fn host_strategy() -> impl Strategy<Value = String> {
-	// A label is alphanumeric characters, optionally with hyphens in the middle
-	let label = "[a-z0-9]([a-z0-9-]{0,10}[a-z0-9])?";
-	// 1-3 labels separated by dots
-	prop::string::string_regex(&format!("{}(\\.{})?(\\.{})?", label, label, label))
-		.expect("valid regex")
-		.prop_filter("non-empty host", |s| !s.is_empty())
-}
-
-/// Strategy for generating valid ports (u16).
-fn port_strategy() -> impl Strategy<Value = Option<u16>> {
-	prop::option::of(any::<u16>())
-}
-
-/// Strategy for generating valid URL path characters.
-/// Path can contain unreserved chars, percent-encoded, sub-delims, ':', '@', '/'
-/// Simplified: alphanumeric, '-', '.', '_', '~', '/'
-fn path_strategy() -> impl Strategy<Value = String> {
-	prop::option::of(prop::string::string_regex("/[a-zA-Z0-9_.~/-]{0,50}").expect("valid regex"))
-		.prop_map(|opt| opt.unwrap_or_default())
-}
-
-/// Strategy for generating valid query strings.
-/// Query can contain unreserved, percent-encoded, sub-delims, ':', '@', '/', '?'
-/// Simplified: alphanumeric, '-', '.', '_', '~', '=', '&'
-fn query_strategy() -> impl Strategy<Value = Option<String>> {
-	prop::option::of(prop::string::string_regex("[a-zA-Z0-9_.~=&-]{1,30}").expect("valid regex"))
-}
-
-/// Strategy for generating valid fragment identifiers.
-/// Similar character set to query.
-fn fragment_strategy() -> impl Strategy<Value = Option<String>> {
-	prop::option::of(prop::string::string_regex("[a-zA-Z0-9_.~-]{1,20}").expect("valid regex"))
-}
-
-/// Combined strategy that generates a complete valid URL and its expected components.
-fn valid_url_strategy() -> impl Strategy<Value = ValidUrl> {
-	(
-		scheme_strategy(),
-		host_strategy(),
-		port_strategy(),
-		path_strategy(),
-		query_strategy(),
-		fragment_strategy(),
-	)
-		.prop_map(|(scheme, host, port, path, query, fragment)| {
-			let mut url_string = format!("{}://{}", scheme, host);
-
-			if let Some(p) = port {
-				url_string.push_str(&format!(":{}", p));
-			}
-
-			url_string.push_str(&path);
-
-			if let Some(ref q) = query {
-				url_string.push('?');
-				url_string.push_str(q);
-			}
-
-			if let Some(ref f) = fragment {
-				url_string.push('#');
-				url_string.push_str(f);
-			}
-
-			ValidUrl { url_string, scheme, host, port, path, query, fragment }
-		})
-}
-
-#[derive(Debug, Clone)]
-struct ValidUrl {
-	url_string: String,
-	scheme: String,
-	host: String,
-	port: Option<u16>,
-	path: String,
-	query: Option<String>,
-	fragment: Option<String>,
-}
 
 proptest! {
 	/// Test that all generated valid URLs can be parsed successfully.
