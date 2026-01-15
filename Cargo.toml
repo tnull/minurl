@@ -7,3 +7,6 @@ license = "MIT OR Apache-2.0"
 description = "A minimal library for parsing and validating URLs."
 
 [dependencies]
+
+[dev-dependencies]
+proptest = "1.5"
