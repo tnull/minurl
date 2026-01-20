@@ -84,6 +84,17 @@ pub fn fragment_strategy() -> impl Strategy<Value = Option<String>> {
 	prop::option::of(prop::string::string_regex("[a-zA-Z0-9_.~-]{1,20}").expect("valid regex"))
 }
 
+/// Strategy for generating valid userinfo (username and optional password).
+/// Returns (username, password) where username may be empty and password is optional.
+pub fn userinfo_strategy() -> impl Strategy<Value = (String, Option<String>)> {
+	let username =
+		prop::option::of(prop::string::string_regex("[a-zA-Z0-9_-]{1,10}").expect("valid regex"))
+			.prop_map(|opt| opt.unwrap_or_default());
+	let password =
+		prop::option::of(prop::string::string_regex("[a-zA-Z0-9_-]{1,10}").expect("valid regex"));
+	(username, password)
+}
+
 /// A generated valid URL with all its expected components.
 #[derive(Debug, Clone)]
 pub struct ValidUrl {
@@ -141,14 +152,26 @@ pub fn url_string_strategy() -> impl Strategy<Value = String> {
 pub fn special_url_string_strategy() -> impl Strategy<Value = String> {
 	(
 		special_scheme_strategy(),
+		userinfo_strategy(),
 		host_strategy(),
 		port_strategy(),
 		path_strategy(),
 		query_strategy(),
 		fragment_strategy(),
 	)
-		.prop_map(|(scheme, host, port, path, query, fragment)| {
-			let mut url_string = format!("{}://{}", scheme, host);
+		.prop_map(|(scheme, (username, password), host, port, path, query, fragment)| {
+			let mut url_string = format!("{}://", scheme);
+
+			if !username.is_empty() {
+				url_string.push_str(&username);
+				if let Some(ref pw) = password {
+					url_string.push(':');
+					url_string.push_str(pw);
+				}
+				url_string.push('@');
+			}
+
+			url_string.push_str(&host);
 
 			if let Some(p) = port {
 				url_string.push_str(&format!(":{}", p));
