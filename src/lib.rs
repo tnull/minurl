@@ -63,6 +63,9 @@ impl std::error::Error for ParseError {}
 ///
 /// All accessor methods return slices into the original URL string,
 /// avoiding any additional string allocations.
+///
+/// **Note:** This type currently only supports ASCII URLs. Non-ASCII characters
+/// (including internationalized domain names and punycode) are not supported.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Url {
 	/// The full serialized URL string.
