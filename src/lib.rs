@@ -15,6 +15,18 @@
 
 //! A minimal library for parsing and validating URLs.
 
+use std::ops::Range;
+
+/// Returns the default port for known schemes, or `None` for unknown schemes.
+fn default_port_for_scheme(scheme: &str) -> Option<u16> {
+	match scheme {
+		"http" | "ws" => Some(80),
+		"https" | "wss" => Some(443),
+		"ftp" => Some(21),
+		_ => None,
+	}
+}
+
 /// Errors that can occur during URL parsing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseError {
@@ -48,17 +60,29 @@ impl std::fmt::Display for ParseError {
 impl std::error::Error for ParseError {}
 
 /// A parsed URL.
+///
+/// All accessor methods return slices into the original URL string,
+/// avoiding any additional string allocations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Url {
+	/// The full serialized URL string.
 	serialization: String,
-	scheme: String,
-	username: String,
-	password: Option<String>,
-	base_url: String,
+	/// Range of the scheme in `serialization`.
+	scheme: Range<usize>,
+	/// Range of the username in `serialization`. Empty range if no username.
+	username: Range<usize>,
+	/// Range of the password in `serialization`, if present.
+	password: Option<Range<usize>>,
+	/// Range of the host in `serialization`.
+	host: Range<usize>,
+	/// The port number, if specified.
 	port: Option<u16>,
-	path: String,
-	query: Option<String>,
-	fragment: Option<String>,
+	/// Range of the path in `serialization`.
+	path: Range<usize>,
+	/// Range of the query string in `serialization` (excludes leading `?`).
+	query: Option<Range<usize>>,
+	/// Range of the fragment in `serialization` (excludes leading `#`).
+	fragment: Option<Range<usize>>,
 }
 
 impl Url {
@@ -101,7 +125,8 @@ impl Url {
 		}
 
 		// Parse the rest after "://"
-		let after_scheme = &url_str[scheme_end + 3..];
+		let after_scheme_pos = scheme_end + 3;
+		let after_scheme = &url_str[after_scheme_pos..];
 
 		// Extract the authority (host:port) - everything before '/', '?', or '#'
 		let authority_end =
@@ -110,26 +135,6 @@ impl Url {
 		let authority = &after_scheme[..authority_end];
 		let after_authority = &after_scheme[authority_end..];
 
-		// Extract the path - everything from '/' until '?' or '#'
-		let (path, after_path) = if after_authority.starts_with('/') {
-			let path_end =
-				after_authority.find(|c| c == '?' || c == '#').unwrap_or(after_authority.len());
-			(&after_authority[..path_end], &after_authority[path_end..])
-		} else {
-			("", after_authority)
-		};
-
-		// Extract the query - everything after '?' until '#'
-		let (query, after_query) = if after_path.starts_with('?') {
-			let query_end = after_path[1..].find('#').map(|i| i + 1).unwrap_or(after_path.len());
-			(Some(&after_path[1..query_end]), &after_path[query_end..])
-		} else {
-			(None, after_path)
-		};
-
-		// Extract the fragment - everything after '#'
-		let fragment = if after_query.starts_with('#') { Some(&after_query[1..]) } else { None };
-
 		// Extract userinfo (username:password@) from authority if present
 		let (userinfo, host_and_port) = if let Some(at_pos) = authority.rfind('@') {
 			(Some(&authority[..at_pos]), &authority[at_pos + 1..])
@@ -137,20 +142,30 @@ impl Url {
 			(None, authority)
 		};
 
-		// Parse username and password from userinfo
+		// Calculate host start position
+		let host_start = if let Some(at_pos) = authority.rfind('@') {
+			after_scheme_pos + at_pos + 1
+		} else {
+			after_scheme_pos
+		};
+
+		// Calculate username and password ranges
 		let (username, password) = if let Some(info) = userinfo {
 			if let Some(colon_pos) = info.find(':') {
-				(info[..colon_pos].to_string(), Some(info[colon_pos + 1..].to_string()))
+				let username = after_scheme_pos..(after_scheme_pos + colon_pos);
+				let password = Some((after_scheme_pos + colon_pos + 1)..(host_start - 1));
+				(username, password)
 			} else {
-				(info.to_string(), None)
+				let username = after_scheme_pos..(after_scheme_pos + info.len());
+				(username, None)
 			}
 		} else {
-			(String::new(), None)
+			(after_scheme_pos..after_scheme_pos, None) // Empty range for no username
 		};
 
 		// Parse host and optional port from host_and_port
 		// Handle IPv6 addresses specially: [ipv6]:port
-		let (host, port) = if host_and_port.starts_with('[') {
+		let (host_len, port) = if host_and_port.starts_with('[') {
 			// IPv6 address - find the closing bracket
 			if let Some(bracket_pos) = host_and_port.find(']') {
 				let after_bracket = &host_and_port[bracket_pos + 1..];
@@ -160,74 +175,101 @@ impl Url {
 					if potential_port.chars().all(|c| c.is_ascii_digit()) {
 						let port_num: u16 =
 							potential_port.parse().map_err(|_| ParseError::InvalidPort)?;
-						(&host_and_port[..bracket_pos + 1], Some(port_num))
+						(bracket_pos + 1, Some(port_num))
 					} else {
-						(host_and_port, None)
+						(host_and_port.len(), None)
 					}
 				} else if after_bracket.is_empty() {
 					// Just [ipv6] with no port
-					(host_and_port, None)
+					(host_and_port.len(), None)
 				} else {
 					// Invalid: something after ] that isn't :port
-					(host_and_port, None)
+					(host_and_port.len(), None)
 				}
 			} else {
 				// No closing bracket - malformed, but don't fail, just use as-is
-				(host_and_port, None)
+				(host_and_port.len(), None)
 			}
 		} else if let Some(colon_pos) = host_and_port.rfind(':') {
 			let potential_port = &host_and_port[colon_pos + 1..];
 			// Check if this is actually a port (all digits)
 			if !potential_port.is_empty() && potential_port.chars().all(|c| c.is_ascii_digit()) {
 				let port_num: u16 = potential_port.parse().map_err(|_| ParseError::InvalidPort)?;
-				(&host_and_port[..colon_pos], Some(port_num))
+				(colon_pos, Some(port_num))
 			} else {
-				(host_and_port, None)
+				(host_and_port.len(), None)
 			}
 		} else {
-			(host_and_port, None)
+			(host_and_port.len(), None)
 		};
 
+		let host_end = host_start + host_len;
+
 		// Validate that host is not empty
-		if host.is_empty() {
+		if host_len == 0 {
 			return Err(ParseError::EmptyHost);
 		}
 
-		let scheme = scheme.to_lowercase();
-		let path = path.to_string();
-		let query = query.map(|q| q.to_string());
-		let fragment = fragment.map(|f| f.to_string());
+		// Calculate path start position (after authority)
+		let path_start = after_scheme_pos + authority_end;
 
-		// Build the serialized URL
-		let mut serialization = format!("{}://", scheme);
-		if !username.is_empty() {
-			serialization.push_str(&username);
-			if let Some(ref pw) = password {
-				serialization.push(':');
-				serialization.push_str(pw);
+		// Copy the URL string and normalize the scheme to lowercase
+		let mut serialization = url_str.to_string();
+		serialization[..scheme_end].make_ascii_lowercase();
+		let url_len = serialization.len();
+
+		// Calculate path, query, and fragment ranges
+		let (path, query, fragment) = {
+			let mut query = None;
+			let mut fragment = None;
+			let mut path_end = url_len;
+
+			if after_authority.starts_with('/') {
+				// Find where path ends (at '?' or '#')
+				if let Some(q_pos) = after_authority.find('?') {
+					let query_start = path_start + q_pos;
+					path_end = query_start;
+					// Fragment comes after query
+					if let Some(f_pos) = after_authority[q_pos..].find('#') {
+						let fragment_start = query_start + f_pos;
+						query = Some((query_start + 1)..fragment_start);
+						fragment = Some((fragment_start + 1)..url_len);
+					} else {
+						query = Some((query_start + 1)..url_len);
+					}
+				} else if let Some(f_pos) = after_authority.find('#') {
+					let fragment_start = path_start + f_pos;
+					path_end = fragment_start;
+					fragment = Some((fragment_start + 1)..url_len);
+				}
+			} else {
+				// No path, check for query/fragment directly
+				if after_authority.starts_with('?') {
+					let query_start = path_start;
+					path_end = query_start;
+					if let Some(f_pos) = after_authority.find('#') {
+						let fragment_start = path_start + f_pos;
+						query = Some((query_start + 1)..fragment_start);
+						fragment = Some((fragment_start + 1)..url_len);
+					} else {
+						query = Some((query_start + 1)..url_len);
+					}
+				} else if after_authority.starts_with('#') {
+					let fragment_start = path_start;
+					path_end = fragment_start;
+					fragment = Some((fragment_start + 1)..url_len);
+				}
 			}
-			serialization.push('@');
-		}
-		serialization.push_str(host);
-		if let Some(p) = port {
-			serialization.push_str(&format!(":{}", p));
-		}
-		serialization.push_str(&path);
-		if let Some(ref q) = query {
-			serialization.push('?');
-			serialization.push_str(q);
-		}
-		if let Some(ref f) = fragment {
-			serialization.push('#');
-			serialization.push_str(f);
-		}
+
+			(path_start..path_end, query, fragment)
+		};
 
 		Ok(Url {
 			serialization,
-			scheme,
+			scheme: 0..scheme_end,
 			username,
 			password,
-			base_url: host.to_string(),
+			host: host_start..host_end,
 			port,
 			path,
 			query,
@@ -237,29 +279,45 @@ impl Url {
 
 	/// Returns the scheme of the URL (e.g., "http", "https").
 	pub fn scheme(&self) -> &str {
-		&self.scheme
+		&self.serialization[self.scheme.clone()]
 	}
 
 	/// Returns the username from the URL, if present.
 	///
 	/// Returns an empty string if no username was specified.
 	pub fn username(&self) -> &str {
-		&self.username
+		&self.serialization[self.username.clone()]
 	}
 
 	/// Returns the password from the URL, if present.
 	pub fn password(&self) -> Option<&str> {
-		self.password.as_deref()
+		self.password.as_ref().map(|r| &self.serialization[r.clone()])
 	}
 
 	/// Returns the base URL (host portion).
 	pub fn base_url(&self) -> &str {
-		&self.base_url
+		&self.serialization[self.host.clone()]
 	}
 
-	/// Returns the port number if specified.
+	/// Returns the port number if specified, unless it is the default port for
+	/// the scheme.
+	///
+	/// Returns `None` if no port was specified, or if the specified port is the
+	/// default for the URL's scheme (e.g., 80 for `http`, 443 for `https`).
 	pub fn port(&self) -> Option<u16> {
-		self.port
+		match self.port {
+			Some(port) if Some(port) == default_port_for_scheme(self.scheme()) => None,
+			port => port,
+		}
+	}
+
+	/// Returns the port number if specified, or the default port for known
+	/// schemes.
+	///
+	/// Unlike [`port()`](Self::port), this method returns the port even if it
+	/// matches the default for the scheme.
+	pub fn port_or_known_default(&self) -> Option<u16> {
+		self.port.or_else(|| default_port_for_scheme(self.scheme()))
 	}
 
 	/// Returns the path of the URL.
@@ -267,7 +325,7 @@ impl Url {
 	/// The path includes the leading `/` if present. Returns an empty string
 	/// if no path was specified.
 	pub fn path(&self) -> &str {
-		&self.path
+		&self.serialization[self.path.clone()]
 	}
 
 	/// Returns an iterator over the path segments.
@@ -275,7 +333,8 @@ impl Url {
 	/// Path segments are the portions between `/` characters. Empty segments
 	/// (from leading or consecutive slashes) are included.
 	pub fn path_segments(&self) -> impl Iterator<Item = &str> {
-		let path = if self.path.starts_with('/') { &self.path[1..] } else { &self.path[..] };
+		let path = self.path();
+		let path = if path.starts_with('/') { &path[1..] } else { path };
 		path.split('/')
 	}
 
@@ -283,7 +342,7 @@ impl Url {
 	///
 	/// The returned string does not include the leading `?`.
 	pub fn query(&self) -> Option<&str> {
-		self.query.as_deref()
+		self.query.as_ref().map(|r| &self.serialization[r.clone()])
 	}
 
 	/// Returns an iterator over the query string's key-value pairs.
@@ -291,7 +350,7 @@ impl Url {
 	/// Pairs are separated by `&` and keys are separated from values by `=`.
 	/// If a pair has no `=`, the value will be an empty string.
 	pub fn query_pairs(&self) -> impl Iterator<Item = (&str, &str)> {
-		self.query.as_deref().into_iter().flat_map(|q| {
+		self.query().into_iter().flat_map(|q| {
 			q.split('&').map(|pair| {
 				if let Some(eq_pos) = pair.find('=') {
 					(&pair[..eq_pos], &pair[eq_pos + 1..])
@@ -306,7 +365,7 @@ impl Url {
 	///
 	/// The returned string does not include the leading `#`.
 	pub fn fragment(&self) -> Option<&str> {
-		self.fragment.as_deref()
+		self.fragment.as_ref().map(|r| &self.serialization[r.clone()])
 	}
 
 	/// Returns the serialized URL as a string slice.
