@@ -41,6 +41,48 @@ proptest! {
 		);
 	}
 
+	/// Test that port_or_known_default() returns the same value for both implementations.
+	#[test]
+	fn port_or_known_default_parity(url_string in special_url_string_strategy()) {
+		let min_url = MinUrl::parse(&url_string).expect("minurl should parse");
+		let max_url = MaxUrl::parse(&url_string).expect("url crate should parse");
+
+		prop_assert_eq!(
+			min_url.port_or_known_default(),
+			max_url.port_or_known_default(),
+			"port_or_known_default() mismatch for URL: {}",
+			url_string
+		);
+	}
+
+	/// Test that username() returns the same value for both implementations.
+	#[test]
+	fn username_parity(url_string in special_url_string_strategy()) {
+		let min_url = MinUrl::parse(&url_string).expect("minurl should parse");
+		let max_url = MaxUrl::parse(&url_string).expect("url crate should parse");
+
+		prop_assert_eq!(
+			min_url.username(),
+			max_url.username(),
+			"username() mismatch for URL: {}",
+			url_string
+		);
+	}
+
+	/// Test that password() returns the same value for both implementations.
+	#[test]
+	fn password_parity(url_string in special_url_string_strategy()) {
+		let min_url = MinUrl::parse(&url_string).expect("minurl should parse");
+		let max_url = MaxUrl::parse(&url_string).expect("url crate should parse");
+
+		prop_assert_eq!(
+			min_url.password(),
+			max_url.password(),
+			"password() mismatch for URL: {}",
+			url_string
+		);
+	}
+
 	/// Test that path() returns the same value for both implementations.
 	/// Note: url crate normalizes empty paths to "/" for URLs with authority,
 	/// while minurl returns "". We test that they match for non-empty paths.
